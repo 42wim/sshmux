@@ -39,20 +39,24 @@ func proxy(reqs1, reqs2 <-chan *ssh.Request, channel1, channel2 ssh.Channel) {
 			if req == nil {
 				return
 			}
+
 			b, err := channel2.SendRequest(req.Type, req.WantReply, req.Payload)
 			if err != nil {
 				return
 			}
+
 			req.Reply(b, nil)
 
 		case req := <-reqs2:
 			if req == nil {
 				return
 			}
+
 			b, err := channel1.SendRequest(req.Type, req.WantReply, req.Payload)
 			if err != nil {
 				return
 			}
+
 			req.Reply(b, nil)
 		case <-closerChan:
 			return
@@ -122,7 +126,9 @@ func (s *Server) ChannelForward(session *Session, newChannel ssh.NewChannel) {
 	}
 
 	go ssh.DiscardRequests(reqs)
+
 	var closer sync.Once
+
 	closeFunc := func() {
 		channel.Close()
 		conn.Close()
@@ -146,7 +152,6 @@ type rw struct {
 // interactive remote host selection if necessary. This forwarding type
 // requires agent forwarding in order to work.
 func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
-
 	// Okay, we're handling this as a regular session
 	sesschan, sessReqs, err := newChannel.Accept()
 	if err != nil {
@@ -158,6 +163,7 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 
 	// Proxy the channel and its requests
 	maskedReqs := make(chan *ssh.Request, 1)
+
 	go func() {
 		for req := range sessReqs {
 			// Filter out auth agent requests, and answer some request types immediately in order to cope with PuTTY.
@@ -167,6 +173,7 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 					req.Reply(true, []byte{})
 				}
 				agentCh <- struct{}{}
+
 				continue
 			case "pty-req", "shell":
 				if req.WantReply {
@@ -186,12 +193,15 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 	stderr := sesschan.Stderr()
 
 	var remote *Remote
+
 	comm := rw{Reader: sesschan, Writer: stderr}
+
 	if s.Interactive == nil {
 		remote, err = DefaultInteractive(comm, session)
 	} else {
 		remote, err = s.Interactive(comm, session)
 	}
+
 	if err != nil {
 		fmt.Fprintf(stderr, "Error selecting remote: %+v\r\n", err)
 		return
@@ -199,16 +209,18 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 
 	var username string
 
-	if s.UsernamePrompt != nil {
+	switch {
+	case s.UsernamePrompt != nil:
 		comm := rw{Reader: sesschan, Writer: stderr}
+
 		username, err = s.UsernamePrompt(comm, session)
 		if err != nil {
 			fmt.Fprintf(stderr, "username prompt failed: %+v", err)
 			return
 		}
-	} else if len(remote.Username) == 0 {
+	case remote.Username == "":
 		username = session.Conn.User()
-	} else {
+	default:
 		username = remote.Username
 	}
 
@@ -252,13 +264,16 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 	}
 
 	if useAgent {
-		agentChan, agentReqs, err := session.Conn.OpenChannel("auth-agent@openssh.com", nil)
-		if err != nil {
-			fmt.Fprintf(stderr, "agent forwarding failed: %+v", err)
+		agentChan, agentReqs, chanErr := session.Conn.OpenChannel("auth-agent@openssh.com", nil)
+		if chanErr != nil {
+			fmt.Fprintf(stderr, "agent forwarding failed: %+v", chanErr)
 			return
 		}
+
 		defer agentChan.Close()
+
 		go ssh.DiscardRequests(agentReqs)
+
 		ag := agent.NewClient(agentChan)
 		clientConfig.Auth = append([]ssh.AuthMethod{ssh.PublicKeysCallback(ag.Signers)}, clientConfig.Auth...)
 	}
@@ -279,6 +294,7 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 		fmt.Fprintf(stderr, "Client connection setup failed: %v\r\n", err)
 		return
 	}
+
 	client := ssh.NewClient(clientConn, clientChans, clientReqs)
 
 	// Forward the session channel

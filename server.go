@@ -187,6 +187,7 @@ func (s *Server) Serve(l net.Listener) error {
 func (s *Server) auth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 	k := key.Marshal()
 	t := key.Type()
+
 	perm := &ssh.Permissions{
 		Extensions: map[string]string{
 			"pubKey":     string(k),

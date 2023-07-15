@@ -16,6 +16,7 @@ func DefaultInteractive(comm io.ReadWriter, session *Session) (*Remote, error) {
 	}
 
 	fmt.Fprintf(comm, "Welcome to sshmux, %s\r\n", session.Conn.User())
+
 	for i, v := range remotes {
 		fmt.Fprintf(comm, "    [%d] %s\r\n", i, v.Description)
 	}
@@ -67,46 +68,56 @@ func StringCallback(comm io.ReadWriter, prompt string, hide bool) (string, error
 	if _, err := fmt.Fprintf(comm, "%s ", prompt); err != nil {
 		return "", err
 	}
-	var buf []byte
+
 	b := make([]byte, 1)
+
 	var (
 		n   int
 		err error
+		buf []byte
 	)
+
 	for {
 		if err != nil {
 			return "", err
 		}
+
 		n, err = comm.Read(b)
 		if n == 1 {
 			switch b[0] {
 			case 0x7F, 0x08:
 				if len(buf) > 0 {
 					buf = buf[0 : len(buf)-1]
+
 					if !hide {
 						fmt.Fprintf(comm, "\033[1D \033[1D")
 					}
 				}
+
 				continue
 			case '\r':
-				if _, err := fmt.Fprintf(comm, "\r\n"); err != nil {
+				if _, err = fmt.Fprintf(comm, "\r\n"); err != nil {
 					return "", err
 				}
+
 				return string(buf), nil
 			case 0x03:
 				fmt.Fprintf(comm, "\r\nGoodbye\r\n")
+
 				return "", errors.New("user terminated session")
 			}
+
 			if !hide {
 				fmt.Fprintf(comm, "%s", b[0:1])
 			}
+
 			buf = append(buf, b[0])
 		}
+
 		if err != nil {
 			return "", err
 		}
 	}
-
 }
 
 // KeyboardChallenge prompts the user for keyboards challenges.
@@ -116,35 +127,43 @@ func KeyboardChallenge(comm io.ReadWriter, user, instruction string, questions [
 			return nil, err
 		}
 	}
+
 	answers := make([]string, len(questions))
+
 	for idx, question := range questions {
 		if _, err := fmt.Fprintf(comm, "%s: ", question); err != nil {
 			return answers, err
 		}
-		var buf []byte
+
 		b := make([]byte, 1)
+
 		var (
 			n   int
 			err error
+			buf []byte
 		)
 	outer:
 		for {
 			if err != nil {
 				return nil, err
 			}
+
 			n, err = comm.Read(b)
 			if n == 1 {
 				if echos[idx] {
-					if _, err := fmt.Fprintf(comm, "%s", b); err != nil {
+					if _, err = fmt.Fprintf(comm, "%s", b); err != nil {
 						return answers, err
 					}
 				}
+
 				switch b[0] {
 				case '\r':
-					if _, err := fmt.Fprintf(comm, "\r\n"); err != nil {
+					if _, err = fmt.Fprintf(comm, "\r\n"); err != nil {
 						return answers, err
 					}
+
 					answers[idx] = string(buf)
+
 					break outer
 				case 0x03:
 					fmt.Fprintf(comm, "\r\nGoodbye\r\n")
@@ -152,6 +171,7 @@ func KeyboardChallenge(comm io.ReadWriter, user, instruction string, questions [
 				}
 				buf = append(buf, b[0])
 			}
+
 			if err != nil {
 				return answers, err
 			}
