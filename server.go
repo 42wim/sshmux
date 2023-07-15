@@ -127,9 +127,10 @@ func (s *Server) HandleConn(c net.Conn) {
 	}
 
 	ext := sshConn.Permissions.Extensions
-	pk := &publicKey{
-		publicKey:     []byte(ext["pubKey"]),
-		publicKeyType: ext["pubKeyType"],
+
+	pk, err := ssh.ParsePublicKey([]byte(ext["pubKey"]))
+	if err != nil {
+		return
 	}
 
 	user, err := s.Authenticator(sshConn, pk)
