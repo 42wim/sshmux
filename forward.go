@@ -6,12 +6,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ryanuber/go-glob"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 )
 
 func proxy(reqs1, reqs2 <-chan *ssh.Request, channel1, channel2 ssh.Channel) {
 	var closer sync.Once
+
 	closeFunc := func() {
 		channel1.Close()
 		channel2.Close()
@@ -69,13 +71,25 @@ type channelOpenDirectMsg struct {
 // ChannelForward establishes a secure channel forward (ssh -W) to the server
 // requested by the user, assuming it is a permitted host.
 func (s *Server) ChannelForward(session *Session, newChannel ssh.NewChannel) {
-	var msg channelOpenDirectMsg
+	var (
+		msg      channelOpenDirectMsg
+		selected *Remote
+	)
+
 	ssh.Unmarshal(newChannel.ExtraData(), &msg)
 	address := fmt.Sprintf("%s:%d", msg.RAddr, msg.RPort)
 
-	var selected *Remote
 	for _, remote := range session.Remotes {
 		for _, name := range remote.Names {
+			if glob.Glob(name, address) {
+				// prepend the selected name to the list of names
+				remote.Names = append([]string{address}, remote.Names...)
+				remote.Address = address
+				selected = remote
+
+				break
+			}
+
 			if name == address {
 				selected = remote
 				break

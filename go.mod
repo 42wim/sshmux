@@ -1,5 +1,10 @@
-module github.com/kennylevinsen/sshmux
+module github.com/42wim/sshmux
 
-go 1.14
+go 1.20
 
-require golang.org/x/crypto v0.1.0
+require (
+	github.com/ryanuber/go-glob v1.0.0
+	golang.org/x/crypto v0.11.0
+)
+
+require golang.org/x/sys v0.10.0 // indirect
