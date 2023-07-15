@@ -89,6 +89,7 @@ type Server struct {
 	// ConnectionTimeout specifies the timeout to use when forwarding a
 	// connection. If zero, a sensible default will be used.
 	ConnectionTimeout time.Duration
+	OnlyProxyJump     bool
 
 	sshConfig *ssh.ServerConfig
 }
@@ -160,10 +161,14 @@ func (s *Server) HandleConn(c net.Conn) {
 	for newChannel := range chans {
 		switch newChannel.ChannelType() {
 		case "session":
+			if s.OnlyProxyJump {
+				newChannel.Reject(ssh.UnknownChannelType, "you can not login here, please ProxyJump to a host first")
+			}
+
 			go s.SessionForward(session, newChannel)
 		case "direct-tcpip":
 			go s.ChannelForward(session, newChannel)
-		case "tcpip-forward":
+		case "forwarded-tcpip":
 			newChannel.Reject(ssh.UnknownChannelType, "sshmux server cannot remote forward ports, please ProxyJump to a host first")
 		default:
 			newChannel.Reject(ssh.UnknownChannelType, fmt.Sprintf("sshmux server cannot handle %s channel types, please ProxyJump to a host first", newChannel.ChannelType()))
