@@ -1,8 +1,6 @@
 package sshmux
 
 import (
-	"log"
-
 	"golang.org/x/crypto/ssh"
 )
 
@@ -103,7 +101,7 @@ func (s *Server) upstreamHostKeyCallback() ssh.HostKeyCallback {
 	}
 
 	s.insecureUpstreamOnce.Do(func() {
-		log.Printf("sshmux: UpstreamHostKeyCallback is not set, upstream host keys are not verified")
+		s.logger().Warn("upstream host keys are not verified, set UpstreamHostKeyCallback")
 	})
 
 	return ssh.InsecureIgnoreHostKey()

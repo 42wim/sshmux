@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -155,6 +156,10 @@ type Server struct {
 	// Further connections wait for a slot. If zero, there is no limit.
 	MaxConcurrentConns int
 
+	// Logger receives connection, authentication and forwarding events. If
+	// nil, slog.Default is used.
+	Logger *slog.Logger
+
 	sshConfig            *ssh.ServerConfig
 	configOnce           sync.Once
 	insecureUpstreamOnce sync.Once
@@ -163,6 +168,14 @@ type Server struct {
 	conns   map[net.Conn]struct{}
 	closed  bool
 	wg      sync.WaitGroup
+}
+
+func (s *Server) logger() *slog.Logger {
+	if s.Logger != nil {
+		return s.Logger
+	}
+
+	return slog.Default()
 }
 
 func (s *Server) trackConn(c net.Conn) bool {
@@ -210,6 +223,17 @@ func (s *Server) applyConfig() {
 			s.PublicKeyAuthAlgorithms, DefaultPublicKeyAuthAlgorithms)
 		s.sshConfig.MaxAuthTries = s.MaxAuthTries
 		s.sshConfig.ServerVersion = s.ServerVersion
+		s.sshConfig.AuthLogCallback = func(conn ssh.ConnMetadata, method string, err error) {
+			if err == nil || errors.Is(err, ssh.ErrNoAuth) {
+				return
+			}
+
+			s.logger().Info("authentication failed",
+				"remote", conn.RemoteAddr().String(),
+				"login", conn.User(),
+				"method", method,
+				"error", err)
+		}
 	})
 }
 
@@ -259,7 +283,10 @@ func (s *Server) HandleConnContext(ctx context.Context, c net.Conn) {
 
 	sshConn, chans, reqs, err := ssh.NewServerConn(c, s.sshConfig)
 	if err != nil {
+		s.logger().Info("handshake failed",
+			"remote", c.RemoteAddr().String(), "error", err)
 		c.Close()
+
 		return
 	}
 	defer sshConn.Close()
@@ -275,10 +302,34 @@ func (s *Server) HandleConnContext(ctx context.Context, c net.Conn) {
 
 	pk, err := ssh.ParsePublicKey([]byte(ext["pubKey"]))
 	if err != nil {
+		s.logger().Warn("could not parse authenticated public key",
+			"remote", sshConn.RemoteAddr().String(), "error", err)
+
 		return
 	}
 
 	user, _ := sshConn.Permissions.ExtraData[authenticatedUser{}].(*User)
+
+	log := s.logger().With(
+		"remote", sshConn.RemoteAddr().String(),
+		"login", sshConn.User(),
+		"fingerprint", ssh.FingerprintSHA256(pk),
+	)
+	if user != nil {
+		log = log.With("user", user.Name)
+	}
+
+	if a, ok := sshConn.Conn.(ssh.AlgorithmsConnMetadata); ok {
+		algs := a.Algorithms()
+		log.Debug("negotiated algorithms",
+			"kex", algs.KeyExchange,
+			"hostkey", algs.HostKey,
+			"cipher", algs.Read.Cipher,
+			"mac", algs.Read.MAC)
+	}
+
+	log.Info("session opened")
+	defer log.Info("session closed")
 
 	session := &Session{
 		Conn:      sshConn,
@@ -287,6 +338,8 @@ func (s *Server) HandleConnContext(ctx context.Context, c net.Conn) {
 	}
 
 	if err := s.Setup(session); err != nil {
+		log.Info("setup denied connection", "error", err)
+
 		return
 	}
 
@@ -366,6 +419,7 @@ func (s *Server) ServeContext(ctx context.Context, l net.Listener) error {
 			// A single failed accept, such as hitting the file descriptor
 			// limit, must not tear down the whole listener.
 			delay = min(max(delay*2, 5*time.Millisecond), time.Second)
+			s.logger().Warn("accept failed, retrying", "error", err, "delay", delay)
 			time.Sleep(delay)
 
 			continue

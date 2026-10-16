@@ -81,7 +81,10 @@ func (s *Server) ChannelForward(session *Session, newChannel ssh.NewChannel) {
 	)
 
 	if err := ssh.Unmarshal(newChannel.ExtraData(), &msg); err != nil {
+		s.logger().Warn("malformed direct-tcpip request",
+			"remote", session.Conn.RemoteAddr().String(), "error", err)
 		newChannel.Reject(ssh.ConnectionFailed, "malformed direct-tcpip request")
+
 		return
 	}
 
@@ -101,35 +104,56 @@ search:
 	}
 
 	if selected == nil {
+		s.logger().Info("forward denied",
+			"remote", session.Conn.RemoteAddr().String(),
+			"login", session.Conn.User(),
+			"target", address)
 		newChannel.Reject(ssh.Prohibited, "remote host access denied for user")
+
 		return
 	}
+
+	log := s.logger().With(
+		"remote", session.Conn.RemoteAddr().String(),
+		"login", session.Conn.User(),
+		"target", address,
+	)
 
 	// Log the selection
 	if s.Selected != nil {
 		if err := s.Selected(session, address); err != nil {
+			log.Info("forward denied by Selected", "error", err)
 			newChannel.Reject(ssh.Prohibited, "access denied")
+
 			return
 		}
 	}
 
 	conn, err := s.Dialer("tcp", address)
 	if err != nil {
+		log.Warn("upstream dial failed", "error", err)
 		newChannel.Reject(ssh.ConnectionFailed, fmt.Sprintf("error: %v", err))
+
 		return
 	}
 
 	channel, reqs, err := newChannel.Accept()
 	if err != nil {
+		log.Warn("could not accept direct-tcpip channel", "error", err)
 		conn.Close()
+
 		return
 	}
+
+	log.Info("forward opened")
 
 	go ssh.DiscardRequests(reqs)
 
 	var closer sync.Once
 
 	closeFunc := func() {
+		log.Info("forward closed")
+
 		if s.ForwardClose != nil {
 			s.ForwardClose(session, address)
 		}
@@ -300,16 +324,27 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 		clientConfig.Timeout = s.ConnectionTimeout
 	}
 
+	log := s.logger().With(
+		"remote", session.Conn.RemoteAddr().String(),
+		"login", session.Conn.User(),
+		"target", remote.Address,
+		"upstream_user", username,
+	)
+
 	conn, err := s.Dialer("tcp", remote.Address)
 	if err != nil {
+		log.Warn("upstream dial failed", "error", err)
 		fmt.Fprintf(stderr, "Connect failed: %v\r\n", err)
+
 		return
 	}
 	defer conn.Close()
 
 	clientConn, clientChans, clientReqs, err := ssh.NewClientConn(conn, remote.Address, clientConfig)
 	if err != nil {
+		log.Warn("upstream handshake failed", "error", err)
 		fmt.Fprintf(stderr, "Client connection setup failed: %v\r\n", err)
+
 		return
 	}
 
@@ -318,9 +353,14 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 	// Forward the session channel
 	channel2, reqs2, err := client.OpenChannel("session", []byte{})
 	if err != nil {
+		log.Warn("upstream session channel failed", "error", err)
 		fmt.Fprintf(stderr, "Remote session setup failed: %v\r\n", err)
+
 		return
 	}
+
+	log.Info("session forward opened")
+	defer log.Info("session forward closed")
 
 	proxy(maskedReqs, reqs2, sesschan, channel2)
 }
