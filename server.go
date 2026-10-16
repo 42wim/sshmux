@@ -1,6 +1,7 @@
 package sshmux
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -150,9 +151,54 @@ type Server struct {
 	UpstreamCiphers      []string
 	UpstreamMACs         []string
 
+	// MaxConcurrentConns bounds the number of connections served at once.
+	// Further connections wait for a slot. If zero, there is no limit.
+	MaxConcurrentConns int
+
 	sshConfig            *ssh.ServerConfig
 	configOnce           sync.Once
 	insecureUpstreamOnce sync.Once
+
+	connsMu sync.Mutex
+	conns   map[net.Conn]struct{}
+	closed  bool
+	wg      sync.WaitGroup
+}
+
+func (s *Server) trackConn(c net.Conn) bool {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+
+	if s.closed {
+		return false
+	}
+
+	if s.conns == nil {
+		s.conns = make(map[net.Conn]struct{})
+	}
+
+	s.conns[c] = struct{}{}
+
+	return true
+}
+
+func (s *Server) untrackConn(c net.Conn) {
+	s.connsMu.Lock()
+	delete(s.conns, c)
+	s.connsMu.Unlock()
+}
+
+// closeConns marks the server closed and drops every live connection, so that
+// the handlers blocked on them return.
+func (s *Server) closeConns() {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+
+	s.closed = true
+
+	for c := range s.conns {
+		c.Close()
+	}
 }
 
 // applyConfig folds the Server fields into the ssh.ServerConfig. It runs once,
@@ -188,7 +234,24 @@ func (p *publicKey) Verify([]byte, *ssh.Signature) error {
 
 // HandleConn takes a net.Conn and runs it through sshmux.
 func (s *Server) HandleConn(c net.Conn) {
+	s.HandleConnContext(context.Background(), c)
+}
+
+// HandleConnContext is HandleConn with a context. Cancelling the context
+// closes the connection.
+func (s *Server) HandleConnContext(ctx context.Context, c net.Conn) {
 	s.applyConfig()
+
+	if !s.trackConn(c) {
+		c.Close()
+		return
+	}
+	defer s.untrackConn(c)
+
+	if ctx.Done() != nil {
+		stop := context.AfterFunc(ctx, func() { c.Close() })
+		defer stop()
+	}
 
 	if d := s.handshakeTimeout(); d > 0 {
 		c.SetDeadline(time.Now().Add(d))
@@ -263,14 +326,40 @@ func (s *Server) HandleConn(c net.Conn) {
 // Serve is an Accept loop that sends the accepted connections through
 // HandleConn.
 func (s *Server) Serve(l net.Listener) error {
+	return s.ServeContext(context.Background(), l)
+}
+
+// ServeContext is Serve with a context. Cancelling the context stops the
+// accept loop, closes the listener and every live connection, and returns once
+// the handlers have finished.
+func (s *Server) ServeContext(ctx context.Context, l net.Listener) error {
 	s.applyConfig()
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	context.AfterFunc(ctx, func() {
+		l.Close()
+		s.closeConns()
+	})
+
+	var sem chan struct{}
+	if s.MaxConcurrentConns > 0 {
+		sem = make(chan struct{}, s.MaxConcurrentConns)
+	}
 
 	var delay time.Duration
 
 	for {
 		conn, err := l.Accept()
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				s.wg.Wait()
+				return ctxErr
+			}
+
 			if errors.Is(err, net.ErrClosed) {
+				s.wg.Wait()
 				return err
 			}
 
@@ -284,7 +373,28 @@ func (s *Server) Serve(l net.Listener) error {
 
 		delay = 0
 
-		go s.HandleConn(conn)
+		if sem != nil {
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				conn.Close()
+				s.wg.Wait()
+
+				return ctx.Err()
+			}
+		}
+
+		s.wg.Add(1)
+
+		go func() {
+			defer s.wg.Done()
+
+			if sem != nil {
+				defer func() { <-sem }()
+			}
+
+			s.HandleConnContext(ctx, conn)
+		}()
 	}
 }
 
