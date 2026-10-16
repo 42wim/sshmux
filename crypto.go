@@ -106,3 +106,34 @@ func (s *Server) upstreamHostKeyCallback() ssh.HostKeyCallback {
 
 	return ssh.InsecureIgnoreHostKey()
 }
+
+// restrictHostKey drops SHA-1 from the signature algorithms a host key may
+// use. ssh.ServerConfig has no host key algorithm setting: the server
+// advertises every algorithm the key format allows, which for RSA includes
+// ssh-rsa, unless the signer reports a narrower set itself.
+func restrictHostKey(signer ssh.Signer) ssh.Signer {
+	if underlyingKeyType(signer.PublicKey().Type()) != ssh.KeyAlgoRSA {
+		return signer
+	}
+
+	as, ok := signer.(ssh.AlgorithmSigner)
+	if !ok {
+		return signer
+	}
+
+	restricted, err := ssh.NewSignerWithAlgorithms(as,
+		[]string{ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSASHA512})
+	if err != nil {
+		return signer
+	}
+
+	return restricted
+}
+
+func underlyingKeyType(keyType string) string {
+	if keyType == ssh.CertAlgoRSAv01 {
+		return ssh.KeyAlgoRSA
+	}
+
+	return keyType
+}

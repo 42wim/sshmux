@@ -31,6 +31,10 @@ somehow negotiated. Together with encrypt-then-MAC this rules out the Terrapin
 prefix truncation attack (CVE-2023-48795). CBC, RC4, 3DES, the CTR modes,
 `hmac-sha1`, `ssh-rsa` (SHA-1) and `ssh-dss` are not offered at all.
 
+RSA host keys are automatically restricted to `rsa-sha2-256` and `rsa-sha2-512`.
+`ssh.ServerConfig` has no host key algorithm setting, so without this the server
+would advertise `ssh-rsa` for any RSA host key and scanners would flag it.
+
 **Compatibility:** this needs roughly OpenSSH 7.2 or PuTTY 0.68 on the client
 side. Anything older will fail to negotiate.
 

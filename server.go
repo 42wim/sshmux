@@ -492,7 +492,7 @@ func New(signers []ssh.Signer, auth func(ssh.ConnMetadata, ssh.PublicKey) (*User
 	}
 
 	for _, signer := range signers {
-		server.sshConfig.AddHostKey(signer)
+		server.sshConfig.AddHostKey(restrictHostKey(signer))
 	}
 
 	return server

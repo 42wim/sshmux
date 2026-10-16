@@ -1,6 +1,9 @@
 package sshmux
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
 	"net"
 	"slices"
 	"testing"
@@ -105,5 +108,47 @@ func TestUpstreamHostKeyCallbackDefaultsToInsecure(t *testing.T) {
 
 	if !called {
 		t.Fatal("configured callback was not used")
+	}
+}
+
+// An RSA host key must not advertise ssh-rsa: ssh.ServerConfig has no host key
+// algorithm setting, so the signer itself has to report the narrower set.
+func TestRSAHostKeyDropsSHA1(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	signer, err := ssh.NewSignerFromKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restricted := restrictHostKey(signer)
+
+	mas, ok := restricted.(ssh.MultiAlgorithmSigner)
+	if !ok {
+		t.Fatal("RSA host key was not restricted to a narrower algorithm set")
+	}
+
+	want := []string{ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSASHA512}
+	if !slices.Equal(mas.Algorithms(), want) {
+		t.Fatalf("got %v, want %v", mas.Algorithms(), want)
+	}
+}
+
+func TestEd25519HostKeyUnchanged(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if restrictHostKey(signer) != signer {
+		t.Fatal("non-RSA host keys must be left alone")
 	}
 }

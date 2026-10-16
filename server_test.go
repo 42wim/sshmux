@@ -2,6 +2,8 @@ package sshmux
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"io"
 	"log/slog"
@@ -217,6 +219,68 @@ func TestServeContextShutsDownGracefully(t *testing.T) {
 
 	if _, err := net.DialTimeout("tcp", l.Addr().String(), time.Second); err == nil {
 		t.Fatal("listener still accepting after shutdown")
+	}
+}
+
+// What the server advertises in its KEXINIT, which is what scanners such as
+// ssh-audit report, regardless of what a given session negotiates.
+func TestAdvertisedAlgorithms(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rsaSigner, err := ssh.NewSignerFromKey(rsaKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hostKey := testSigner(t)
+	s := New([]ssh.Signer{hostKey, rsaSigner},
+		func(ssh.ConnMetadata, ssh.PublicKey) (*User, error) { return nil, nil },
+		func(*Session) error { return nil })
+
+	for _, tc := range []struct {
+		name   string
+		apply  func(*ssh.ClientConfig)
+		banned []string
+	}{
+		{"key exchange", func(c *ssh.ClientConfig) {
+			c.KeyExchanges = []string{"bogus-kex"}
+		}, []string{
+			ssh.InsecureKeyExchangeDH14SHA1,
+			ssh.InsecureKeyExchangeDH1SHA1,
+			ssh.InsecureKeyExchangeDHGEXSHA1,
+		}},
+		{"cipher", func(c *ssh.ClientConfig) {
+			c.Ciphers = []string{"bogus-cipher"}
+		}, []string{
+			ssh.CipherAES128CTR, ssh.CipherAES192CTR, ssh.CipherAES256CTR,
+			ssh.InsecureCipherAES128CBC, ssh.InsecureCipherTripleDESCBC,
+		}},
+		{"host key", func(c *ssh.ClientConfig) {
+			c.HostKeyAlgorithms = []string{"bogus-hostkey"}
+		}, []string{ssh.KeyAlgoRSA, ssh.InsecureKeyAlgoDSA}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testClientConfig(t, hostKey)
+			tc.apply(cfg)
+
+			_, err := connect(t, s, cfg)
+			if err == nil {
+				t.Fatal("expected the handshake to fail")
+			}
+
+			// The error names every algorithm the peer offered.
+			offered := err.Error()
+			t.Log(offered)
+
+			for _, bad := range tc.banned {
+				if strings.Contains(offered, `"`+bad+`"`) {
+					t.Errorf("server advertises %q", bad)
+				}
+			}
+		})
 	}
 }
 
