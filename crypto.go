@@ -1,6 +1,10 @@
 package sshmux
 
-import "golang.org/x/crypto/ssh"
+import (
+	"log"
+
+	"golang.org/x/crypto/ssh"
+)
 
 // DefaultKeyExchanges lists the permitted key exchange algorithms, in
 // preference order. The post-quantum hybrid exchange is offered first so that
@@ -79,4 +83,28 @@ func (s *Server) cryptoConfig() ssh.Config {
 		Ciphers:      orDefault(s.Ciphers, DefaultCiphers),
 		MACs:         orDefault(s.MACs, DefaultMACs),
 	}
+}
+
+// upstreamCryptoConfig returns the algorithm policy applied to connections this
+// server makes to upstream hosts.
+func (s *Server) upstreamCryptoConfig() ssh.Config {
+	return ssh.Config{
+		KeyExchanges: orDefault(s.UpstreamKeyExchanges, DefaultKeyExchanges),
+		Ciphers:      orDefault(s.UpstreamCiphers, DefaultCiphers),
+		MACs:         orDefault(s.UpstreamMACs, DefaultMACs),
+	}
+}
+
+// upstreamHostKeyCallback returns the configured upstream verifier, falling
+// back to accepting any host key.
+func (s *Server) upstreamHostKeyCallback() ssh.HostKeyCallback {
+	if s.UpstreamHostKeyCallback != nil {
+		return s.UpstreamHostKeyCallback
+	}
+
+	s.insecureUpstreamOnce.Do(func() {
+		log.Printf("sshmux: UpstreamHostKeyCallback is not set, upstream host keys are not verified")
+	})
+
+	return ssh.InsecureIgnoreHostKey()
 }

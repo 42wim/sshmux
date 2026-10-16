@@ -130,8 +130,29 @@ type Server struct {
 	// Negative disables the deadline.
 	HandshakeTimeout time.Duration
 
-	sshConfig  *ssh.ServerConfig
-	configOnce sync.Once
+	// UpstreamHostKeyCallback verifies the host key presented by an upstream
+	// server during a session forward. If nil, upstream host keys are
+	// accepted without verification, which leaves the hop between sshmux and
+	// the target open to interception. Prefer knownhosts.New.
+	//
+	// This does not apply to direct-tcpip forwards (ssh -W, ProxyJump), where
+	// sshmux relays raw TCP and the client verifies the host key itself.
+	UpstreamHostKeyCallback ssh.HostKeyCallback
+
+	// UpstreamHostKeyAlgorithms restricts the host key algorithms accepted
+	// from upstream servers. If empty, DefaultHostKeyAlgorithms is used.
+	UpstreamHostKeyAlgorithms []string
+
+	// UpstreamKeyExchanges, UpstreamCiphers and UpstreamMACs restrict the
+	// algorithms offered to upstream servers. If empty, the corresponding
+	// Default* list is used.
+	UpstreamKeyExchanges []string
+	UpstreamCiphers      []string
+	UpstreamMACs         []string
+
+	sshConfig            *ssh.ServerConfig
+	configOnce           sync.Once
+	insecureUpstreamOnce sync.Once
 }
 
 // applyConfig folds the Server fields into the ssh.ServerConfig. It runs once,

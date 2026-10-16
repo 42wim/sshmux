@@ -264,8 +264,10 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 
 	// Set up the client
 	clientConfig := &ssh.ClientConfig{
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		User:            username,
+		Config:            s.upstreamCryptoConfig(),
+		HostKeyCallback:   s.upstreamHostKeyCallback(),
+		HostKeyAlgorithms: orDefault(s.UpstreamHostKeyAlgorithms, DefaultHostKeyAlgorithms),
+		User:              username,
 		Auth: []ssh.AuthMethod{
 			ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
 				comm := rw{Reader: sesschan, Writer: stderr}
