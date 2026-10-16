@@ -80,23 +80,22 @@ func (s *Server) ChannelForward(session *Session, newChannel ssh.NewChannel) {
 		selected *Remote
 	)
 
-	ssh.Unmarshal(newChannel.ExtraData(), &msg)
+	if err := ssh.Unmarshal(newChannel.ExtraData(), &msg); err != nil {
+		newChannel.Reject(ssh.ConnectionFailed, "malformed direct-tcpip request")
+		return
+	}
+
 	address := fmt.Sprintf("%s:%d", msg.RAddr, msg.RPort)
 
+	// A matched remote is dialed at the address the user asked for, so that a
+	// single globbed entry can cover many hosts. Names without a wildcard
+	// compare equal, so this also covers exact matches.
+search:
 	for _, remote := range session.Remotes {
 		for _, name := range remote.Names {
 			if glob.Glob(name, address) {
-				// prepend the selected name to the list of names
-				remote.Names = append([]string{address}, remote.Names...)
-				remote.Address = address
 				selected = remote
-
-				break
-			}
-
-			if name == address {
-				selected = remote
-				break
+				break search
 			}
 		}
 	}
@@ -108,13 +107,13 @@ func (s *Server) ChannelForward(session *Session, newChannel ssh.NewChannel) {
 
 	// Log the selection
 	if s.Selected != nil {
-		if err := s.Selected(session, selected.Address); err != nil {
+		if err := s.Selected(session, address); err != nil {
 			newChannel.Reject(ssh.Prohibited, "access denied")
 			return
 		}
 	}
 
-	conn, err := s.Dialer("tcp", selected.Address)
+	conn, err := s.Dialer("tcp", address)
 	if err != nil {
 		newChannel.Reject(ssh.ConnectionFailed, fmt.Sprintf("error: %v", err))
 		return
@@ -122,6 +121,7 @@ func (s *Server) ChannelForward(session *Session, newChannel ssh.NewChannel) {
 
 	channel, reqs, err := newChannel.Accept()
 	if err != nil {
+		conn.Close()
 		return
 	}
 
@@ -131,7 +131,7 @@ func (s *Server) ChannelForward(session *Session, newChannel ssh.NewChannel) {
 
 	closeFunc := func() {
 		if s.ForwardClose != nil {
-			s.ForwardClose(session, selected.Address)
+			s.ForwardClose(session, address)
 		}
 		channel.Close()
 		conn.Close()
@@ -169,7 +169,9 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 	}
 	defer sesschan.Close()
 
-	agentCh := make(chan struct{})
+	// Buffered: the request pump must not block if the agent request arrives
+	// after the wait below has already given up.
+	agentCh := make(chan struct{}, 1)
 
 	// Proxy the channel and its requests
 	maskedReqs := make(chan *ssh.Request, 1)
@@ -182,7 +184,11 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 				if req.WantReply {
 					req.Reply(true, []byte{})
 				}
-				agentCh <- struct{}{}
+
+				select {
+				case agentCh <- struct{}{}:
+				default:
+				}
 
 				continue
 			case "pty-req", "shell":

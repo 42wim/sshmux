@@ -11,6 +11,10 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// DefaultHandshakeTimeout bounds how long an unauthenticated connection may
+// occupy the server, mirroring OpenSSH's LoginGraceTime.
+const DefaultHandshakeTimeout = 2 * time.Minute
+
 // Remote describes the selectable remote server.
 type Remote struct {
 	// The various names that can be used to select this remote
@@ -121,6 +125,11 @@ type Server struct {
 	// must start with "SSH-2.0-". If empty, a sensible default is used.
 	ServerVersion string
 
+	// HandshakeTimeout bounds the time between accepting a connection and
+	// completing authentication. If zero, DefaultHandshakeTimeout is used.
+	// Negative disables the deadline.
+	HandshakeTimeout time.Duration
+
 	sshConfig  *ssh.ServerConfig
 	configOnce sync.Once
 }
@@ -160,12 +169,19 @@ func (p *publicKey) Verify([]byte, *ssh.Signature) error {
 func (s *Server) HandleConn(c net.Conn) {
 	s.applyConfig()
 
+	if d := s.handshakeTimeout(); d > 0 {
+		c.SetDeadline(time.Now().Add(d))
+	}
+
 	sshConn, chans, reqs, err := ssh.NewServerConn(c, s.sshConfig)
 	if err != nil {
 		c.Close()
 		return
 	}
 	defer sshConn.Close()
+
+	// Authentication is done; the deadline must not bound the session itself.
+	c.SetDeadline(time.Time{})
 
 	if sshConn.Permissions == nil || sshConn.Permissions.Extensions == nil {
 		return
@@ -178,10 +194,7 @@ func (s *Server) HandleConn(c net.Conn) {
 		return
 	}
 
-	user, err := s.Authenticator(sshConn, pk)
-	if err != nil {
-		return
-	}
+	user, _ := sshConn.Permissions.ExtraData[authenticatedUser{}].(*User)
 
 	session := &Session{
 		Conn:      sshConn,
@@ -189,7 +202,9 @@ func (s *Server) HandleConn(c net.Conn) {
 		PublicKey: pk,
 	}
 
-	s.Setup(session)
+	if err := s.Setup(session); err != nil {
+		return
+	}
 
 	go func() {
 		for req := range reqs {
@@ -209,6 +224,8 @@ func (s *Server) HandleConn(c net.Conn) {
 		case "session":
 			if s.OnlyProxyJump {
 				newChannel.Reject(ssh.UnknownChannelType, "you can not login here, please ProxyJump to a host first")
+
+				continue
 			}
 
 			go s.SessionForward(session, newChannel)
@@ -227,33 +244,54 @@ func (s *Server) HandleConn(c net.Conn) {
 func (s *Server) Serve(l net.Listener) error {
 	s.applyConfig()
 
+	var delay time.Duration
+
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			return err
+			if errors.Is(err, net.ErrClosed) {
+				return err
+			}
+
+			// A single failed accept, such as hitting the file descriptor
+			// limit, must not tear down the whole listener.
+			delay = min(max(delay*2, 5*time.Millisecond), time.Second)
+			time.Sleep(delay)
+
+			continue
 		}
+
+		delay = 0
 
 		go s.HandleConn(conn)
 	}
 }
 
+// authenticatedUser keys the *User resolved during authentication in
+// ssh.Permissions.ExtraData.
+type authenticatedUser struct{}
+
+func (s *Server) handshakeTimeout() time.Duration {
+	if s.HandshakeTimeout == 0 {
+		return DefaultHandshakeTimeout
+	}
+
+	return s.HandshakeTimeout
+}
+
 func (s *Server) auth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-	k := key.Marshal()
-	t := key.Type()
+	user, err := s.Authenticator(conn, key)
+	if err != nil {
+		return nil, err
+	}
 
-	perm := &ssh.Permissions{
+	return &ssh.Permissions{
 		Extensions: map[string]string{
-			"pubKey":     string(k),
-			"pubKeyType": t,
+			"pubKey":     string(key.Marshal()),
+			"pubKeyType": key.Type(),
 		},
-	}
-
-	_, err := s.Authenticator(conn, key)
-	if err == nil {
-		return perm, nil
-	}
-
-	return nil, err
+		ExtraData: map[any]any{authenticatedUser{}: user},
+	}, nil
 }
 
 // New returns a Server initialized with the provided signer and callbacks.
