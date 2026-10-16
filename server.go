@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -100,7 +101,40 @@ type Server struct {
 	// Main use case is to log connections ending.
 	ForwardClose func(*Session, string)
 
-	sshConfig *ssh.ServerConfig
+	// KeyExchanges, Ciphers and MACs restrict the algorithms offered to
+	// connecting clients. If empty, the corresponding Default* list is used.
+	KeyExchanges []string
+	Ciphers      []string
+	MACs         []string
+
+	// PublicKeyAuthAlgorithms restricts the algorithms accepted for client
+	// public key authentication. If empty,
+	// DefaultPublicKeyAuthAlgorithms is used.
+	PublicKeyAuthAlgorithms []string
+
+	// MaxAuthTries is the number of authentication attempts permitted per
+	// connection. If zero, a sensible default is used. Negative means
+	// unlimited.
+	MaxAuthTries int
+
+	// ServerVersion is the version string announced during the handshake. It
+	// must start with "SSH-2.0-". If empty, a sensible default is used.
+	ServerVersion string
+
+	sshConfig  *ssh.ServerConfig
+	configOnce sync.Once
+}
+
+// applyConfig folds the Server fields into the ssh.ServerConfig. It runs once,
+// lazily, so that fields assigned after New still take effect.
+func (s *Server) applyConfig() {
+	s.configOnce.Do(func() {
+		s.sshConfig.Config = s.cryptoConfig()
+		s.sshConfig.PublicKeyAuthAlgorithms = orDefault(
+			s.PublicKeyAuthAlgorithms, DefaultPublicKeyAuthAlgorithms)
+		s.sshConfig.MaxAuthTries = s.MaxAuthTries
+		s.sshConfig.ServerVersion = s.ServerVersion
+	})
 }
 
 type publicKey struct {
@@ -124,6 +158,8 @@ func (p *publicKey) Verify([]byte, *ssh.Signature) error {
 
 // HandleConn takes a net.Conn and runs it through sshmux.
 func (s *Server) HandleConn(c net.Conn) {
+	s.applyConfig()
+
 	sshConn, chans, reqs, err := ssh.NewServerConn(c, s.sshConfig)
 	if err != nil {
 		c.Close()
@@ -189,6 +225,8 @@ func (s *Server) HandleConn(c net.Conn) {
 // Serve is an Accept loop that sends the accepted connections through
 // HandleConn.
 func (s *Server) Serve(l net.Listener) error {
+	s.applyConfig()
+
 	for {
 		conn, err := l.Accept()
 		if err != nil {

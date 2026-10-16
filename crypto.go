@@ -70,3 +70,13 @@ func orDefault(configured, fallback []string) []string {
 
 	return configured
 }
+
+// cryptoConfig returns the algorithm policy applied to connections accepted by
+// this server.
+func (s *Server) cryptoConfig() ssh.Config {
+	return ssh.Config{
+		KeyExchanges: orDefault(s.KeyExchanges, DefaultKeyExchanges),
+		Ciphers:      orDefault(s.Ciphers, DefaultCiphers),
+		MACs:         orDefault(s.MACs, DefaultMACs),
+	}
+}
