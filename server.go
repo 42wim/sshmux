@@ -321,7 +321,7 @@ func (s *Server) HandleConnContext(ctx context.Context, c net.Conn) {
 
 	if a, ok := sshConn.Conn.(ssh.AlgorithmsConnMetadata); ok {
 		algs := a.Algorithms()
-		log.Debug("negotiated algorithms",
+		log.Info("negotiated algorithms",
 			"kex", algs.KeyExchange,
 			"hostkey", algs.HostKey,
 			"cipher", algs.Read.Cipher,
